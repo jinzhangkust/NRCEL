@@ -26,7 +26,7 @@ from models.resnet_proj import resnet50
 from models.inception_proj import inception
 from models.ViT import vit_b_16_diy    # torchvision导入模型需将图片下采样到224*224
 
-from losses import DisparityLoss
+from losses import DisparityLoss, mutuallabeling
 from mine import get_estimator, MINE_DV
 
 from util import AverageMeter, accuracy
@@ -329,54 +329,6 @@ def warmup_val(val_loader, vgg, inception, resnet, ce_criterion, disparity_crite
     tb.add_scalar("WarmupVal/DisparityLoss/ResNet", total_disloss_resnet, epoch)
 
 
-def mutuallabeling(train_loader, vgg, inception, resnet):
-    vgg.eval()
-    inception.eval()
-    resnet.eval()
-    with torch.no_grad():
-        for idx, (index, (im_w, _), labels) in enumerate(train_loader):
-            im_w = im_w.cuda(non_blocking=True)
-            #labels = labels.cuda(non_blocking=True)
-            code_vgg, out_vgg = vgg(im_w)
-            code_inception, out_inception = inception(im_w)
-            code_resnet, out_resnet = resnet(im_w)
-            out_vgg = np.argmax(out_vgg.detach().cpu().numpy(), axis=1)
-            out_inception = np.argmax(out_inception.detach().cpu().numpy(), axis=1)
-            out_resnet = np.argmax(out_resnet.detach().cpu().numpy(), axis=1)
-            if idx == 0:
-                index_set = index
-                predict_set_vgg = out_vgg
-                predict_set_inception = out_inception
-                predict_set_resnet = out_resnet
-                label_set = labels
-                code_set_vgg = code_vgg.detach().cpu().numpy()
-                code_set_inception = code_inception.detach().cpu().numpy()
-                code_set_resnet = code_resnet.detach().cpu().numpy()
-            else:
-                index_set = np.append(index_set, index, axis=0)
-                predict_set_vgg = np.append(predict_set_vgg, out_vgg, axis=0)
-                predict_set_inception = np.append(predict_set_inception, out_inception, axis=0)
-                predict_set_resnet = np.append(predict_set_resnet, out_resnet, axis=0)
-                label_set = np.append(label_set, labels, axis=0)
-                code_set_vgg = np.append(code_set_vgg, code_vgg.detach().cpu().numpy(), axis=0)
-                code_set_inception = np.append(code_set_inception, code_inception.detach().cpu().numpy(), axis=0)
-                code_set_resnet = np.append(code_set_resnet, code_resnet.detach().cpu().numpy(), axis=0)
-    vgg_inception_match = (predict_set_vgg == predict_set_inception) & (predict_set_vgg == label_set)
-    vgg_resnet_match = (predict_set_vgg == predict_set_resnet) & (predict_set_vgg == label_set)
-    inception_resnet_match = (predict_set_inception == predict_set_resnet) & (predict_set_inception == label_set)
-    clean_resnet_inception = np.where(vgg_inception_match)[0]
-    noise_resnet_inception = np.where(~vgg_inception_match)[0]
-    inception_proto = np.mean(code_set_inception[clean_resnet_inception], axis=0)
-    dict_vgg = {'clean_idx': index_set[clean_resnet_inception], 'noise_idx': index_set[noise_resnet_inception], 'proto': inception_proto}
-    clean_vgg_resnet = np.where(inception_resnet_match)[0]
-    noise_vgg_resnet = np.where(~inception_resnet_match)[0]
-    vgg_proto = np.mean(code_set_vgg[clean_vgg_resnet], axis=0)
-    dict_inception = {'clean_idx': index_set[clean_vgg_resnet], 'noise_idx': index_set[noise_vgg_resnet], 'proto': vgg_proto}
-    clean_vgg_inception = np.where(vgg_resnet_match)[0]
-    noise_vgg_inception = np.where(~vgg_resnet_match)[0]
-    resnet_proto = np.mean(code_set_resnet[clean_vgg_inception], axis=0)
-    dict_resnet = {'clean_idx': index_set[clean_vgg_inception], 'noise_idx': index_set[noise_vgg_inception], 'proto': resnet_proto}
-    return dict_vgg, dict_inception, dict_resnet
 
 def iter_train(labeled_loader, unlabeled_loader, sensor, ce_criterion, optimizer, mine_model, mine_optimizer, opt):
     cosi = nn.CosineSimilarity(dim=1, eps=1e-6)
