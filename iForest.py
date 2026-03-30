@@ -159,71 +159,6 @@ def set_loader(opt):
     return train_data, train_loader, val_loader, test_loader
 
 
-def clean_noise_division(model, train_data, opt, n_classes=6):
-    #dataset = train_loader.dataset  # indics_set存储的是fulldata中的绝对路径，超出了traindata的索引范围
-    full_data = data4cls()
-    """train_size = int(0.6 * len(full_data))
-    val_size = int(0.2 * len(full_data))
-    test_size = len(full_data) - train_size - val_size
-    train_data, val_data, test_data = torch.utils.data.random_split(full_data, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(42))
-    val_loader = DataLoader(val_data, opt.batch_size, shuffle=True, num_workers=opt.num_workers)
-    random.seed(42)
-    num_noise = int(0.4 * train_size)
-    noise_idx = random.sample(range(train_size), num_noise)
-    for idx in noise_idx:
-        train_data.dataset.labels[idx] = random.randint(0, 5)"""
-    train_loader = DataLoader(train_data, batch_size=opt.batch_size, shuffle=True, num_workers=opt.num_workers)
-    feature_set = None
-    label_set = None
-    indics_set = None
-    noise_data = None
-    clean_data = None
-    #noise_mask = np.zeros(len(train_loader), dtype=bool)
-    for _, (idx, (im_w, _), labels) in enumerate(train_loader):
-        im_w = im_w.cuda(non_blocking=True)
-        labels = labels.cuda(non_blocking=True)
-        # compute output
-        feature, _ = model(im_w)
-        if feature_set is not None:
-            feature_set = np.append(feature_set, feature.cpu().detach().numpy(), axis=0)
-            label_set = np.append(label_set, labels.cpu().detach().numpy(), axis=0)
-            indics_set = np.append(indics_set, idx.cpu().detach().numpy(), axis=0)  # global indics in fulldata
-        else:
-            feature_set = feature.cpu().detach().numpy()
-            label_set = labels.cpu().detach().numpy()
-            indics_set = idx.cpu().detach().numpy()
-    print(f"Num of training data: {len(indics_set)}")
-    for cls in range(n_classes):
-        cls_mask = label_set == cls
-        cls_feature = feature_set[cls_mask]
-        #cls_indics = np.where(cls_mask)[0]
-        cls_indics = indics_set[cls_mask]
-        print(f"cls_indics: {cls_indics}")
-        #ins_mask = np.where(cls_mask)[0]
-
-        iforest = IsolationForest(contamination=0.4)    # 40% noise
-        iforest.fit(cls_feature)
-        anomalies = iforest.predict(cls_feature)
-        print(f"anomalies: {anomalies}")
-        noise_indics = cls_indics[anomalies == -1]
-        clean_indics = cls_indics[anomalies == 1]
-        if noise_data is not None:
-            noise_data = np.append(noise_data, noise_indics)
-            clean_data = np.append(clean_data, clean_indics)
-        else:
-            noise_data = noise_indics
-            clean_data = clean_indics
-        print(f"Class {cls} has {len(noise_indics)} noise samples.")
-    # divide clean data and noise data
-    #clean_mask = ~noise_mask
-    #clean_data = indics_set[clean_mask]
-    #noise_data = indics_set[noise_mask]
-
-    clean_data_sampler = torch.utils.data.SubsetRandomSampler(clean_data)
-    noise_data_sampler = torch.utils.data.SubsetRandomSampler(noise_data)
-    clean_loader = DataLoader(full_data, batch_size=opt.batch_size, sampler=clean_data_sampler)
-    noise_loader = DataLoader(full_data, batch_size=opt.batch_size, sampler=noise_data_sampler)
-    return clean_data, clean_loader, noise_loader
 
 
 def set_trimodel():
@@ -269,42 +204,7 @@ def pseudo_loader(opt, clean_data, aug_dict_vgg, aug_dict_inception, aug_dict_re
     return train_labeled_pseudo_vgg_loader, train_labeled_pseudo_inception_loader, train_labeled_pseudo_resnet_loader
 
 
-def pseudolabeling(train_unlabeled_loader, vggsensor, inceptionsensor, resnetsensor):
-    vggsensor.eval()
-    inceptionsensor.eval()
-    resnetsensor.eval()
-    with torch.no_grad():
-        for idx, (index, (im_w, _), labels) in enumerate(train_unlabeled_loader):
-            im_w = im_w.cuda(non_blocking=True)
-            # compute loss
-            output_vgg = vggsensor(im_w)
-            output_inception = inceptionsensor(im_w)
-            output_resnet = resnetsensor(im_w)
-            # update metric
-            if idx == 0:
-                index_set = index
-                predict_set_vgg = output_vgg.detach().cpu().numpy()
-                predict_set_inception = output_inception.detach().cpu().numpy()
-                predict_set_resnet = output_resnet.detach().cpu().numpy()
-            else:
-                index_set = np.append(index_set, index, axis=0)
-                predict_set_vgg = np.append(predict_set_vgg, output_vgg.detach().cpu().numpy(), axis=0)
-                predict_set_inception = np.append(predict_set_inception, output_inception.detach().cpu().numpy(), axis=0)
-                predict_set_resnet = np.append(predict_set_resnet, output_resnet.detach().cpu().numpy(), axis=0)
-    # 验证predict_set_vgg、predict_set_inception和predict_set_resnet预测结果的一致性
-    # 选择一致的样本
-    index_vgg = np.where(np.argmax(predict_set_inception, axis=1) == np.argmax(predict_set_resnet, axis=1))[0]
-    index_inception = np.where(np.argmax(predict_set_resnet, axis=1) == np.argmax(predict_set_vgg, axis=1))[0]
-    index_resnet = np.where(np.argmax(predict_set_vgg, axis=1) == np.argmax(predict_set_inception, axis=1))[0]
-    # 选择一致样本的伪标签
-    aug_label_vgg = np.argmax(predict_set_inception[index_vgg], axis=1)
-    aug_label_inception = np.argmax(predict_set_resnet[index_inception], axis=1)
-    aug_label_resnet = np.argmax(predict_set_vgg[index_resnet], axis=1)
-    # 生成伪标签数据集
-    augdict_vgg = {'pseudo_idx': index_set[index_vgg], 'pseudo_label': aug_label_vgg}
-    augdict_inception = {'pseudo_idx': index_set[index_inception], 'pseudo_label': aug_label_inception}
-    augdict_resnet = {'pseudo_idx': index_set[index_resnet], 'pseudo_label': aug_label_resnet}
-    return augdict_vgg, augdict_inception, augdict_resnet
+
 
 
 def init_train(train_labeled_loader, vggsensor, inceptionsensor, resnetsensor, criterion, optimizer_vgg, optimizer_inception, optimizer_resnet, epoch, opt, tb):
